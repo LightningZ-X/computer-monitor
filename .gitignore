@@ -1,0 +1,36 @@
+# 注意：.gitignore 的 # 只在**行首**才算注释，行尾写 # 会被当成模式的一部分。
+# 这里所有说明都单独占一行。
+
+# ---- 运行时数据 / 体积巨大，绝不入库 ----
+
+# SQLite 采样库：实测已 830 MB，且按天增长
+data/
+# CSV 导出
+exports/
+# 还原出来的 .NET 程序集（79 MB，可由 localnuget 里的 nupkg 还原）
+packages/
+# 下载的 .nupkg
+localnuget/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 由程序回写的配置 ----
+# 每次退出都会改写，入库只会让工作区永远是 dirty。
+# 程序启动时若不存在，会按 vrmmon/config.py 的默认值自动生成。
+config.json
+
+# ---- 安装器生成的机器相关备份 ----
+# 里面是本机完整 PATH（含用户名），换机器毫无意义。
+path-backup.txt
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini

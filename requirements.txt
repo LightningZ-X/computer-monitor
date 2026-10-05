@@ -1,0 +1,8 @@
+# vrmmon 依赖
+#
+# 界面用标准库 tkinter，不需要 PySide6 之类的大包。
+pythonnet>=3.0         # 进程内加载 LibreHardwareMonitorLib（.NET 程序集）
+nvidia-ml-py>=13.0     # 提供 pynvml，直读 NVIDIA 显卡（可选，缺失时自动跳过）
+pystray>=0.19          # 托盘图标（可选）
+pillow>=10.1           # 绘制托盘图标（load_default(size=) 需要 >= 10.1）
+psutil>=5.9            # 判断 HWiNFO 进程是否在运行（可选）

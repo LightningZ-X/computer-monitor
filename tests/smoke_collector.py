@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+from datetime import datetime
 from itertools import islice
 from pathlib import Path
 
@@ -99,15 +100,31 @@ def main() -> int:
         collector.stop()
         reopened = sqlite3.connect(str(config.db_path))
         final_rows = reopened.execute("SELECT COUNT(*) FROM samples").fetchone()[0]
+
+        # 时间戳必须是墙钟。
+        # 回归保护：曾经把 time.monotonic()（开机以来秒数）当成数据时间戳写库，
+        # 5,469,624 行的 ts 落在 1970 年——值没坏、时间全错，肉眼完全看不出来，
+        # 直到导出和保留策略都失效才暴露。这里断言 ts 与当前墙钟在合理范围内。
+        lowest, highest = reopened.execute(
+            "SELECT MIN(ts), MAX(ts) FROM samples").fetchone()
         reopened.close()
+        wall = time.time()
+        drift = max(abs(wall - lowest), abs(wall - highest))
+        print("=" * 70)
+        print(f"时间戳: {datetime.fromtimestamp(lowest):%Y-%m-%d %H:%M:%S}"
+              f" ~ {datetime.fromtimestamp(highest):%Y-%m-%d %H:%M:%S}")
+        print(f"与墙钟最大偏差: {drift:.1f} 秒（必须远小于一天，否则是把 monotonic 写进去了）")
 
         print("=" * 70)
         print(f"重开数据库读到 {final_rows} 行（采集期间报告 {expected} 行）")
-        ok = final_rows > 0 and rows == final_rows
+        ok = final_rows > 0 and rows == final_rows and drift < 3600
         if not ok:
-            print(f"失败 - 库里有 {final_rows} 行，导出了 {rows} 行"
-                  f"（CSV 与数据库不一致）" if final_rows else
-                  "失败 - 没有任何数据入库")
+            if not final_rows:
+                print("失败 - 没有任何数据入库")
+            elif rows != final_rows:
+                print(f"失败 - 库里有 {final_rows} 行，导出了 {rows} 行（CSV 与数据库不一致）")
+            else:
+                print(f"失败 - 时间戳偏差 {drift:.1f} 秒，像是把 monotonic 写进了数据库")
         else:
             print("OK - 冒烟测试通过")
         return 0 if ok else 1

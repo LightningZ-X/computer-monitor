@@ -86,8 +86,9 @@ class Collector:
         self._timer_raised = False
         #: 上次落盘时刻（采样与入库解耦，见 log_interval_s）
         self._last_log = 0.0
-        #: 上次清理过期记录的时刻
-        self._last_purge = time.monotonic()
+        #: 上次清理过期记录的时刻。用 0.0 而不是 monotonic：下面与 now（墙钟）比较，
+        #: 混用两个时钟会让第一次比较必然成立。
+        self._last_purge = 0.0
         # 已有历史数据时从现有行数起算，之后按写入量自增，避免每轮 COUNT(*)
         self._rows = self.store.rows()
         self._db_bytes = self.store.size_bytes()
@@ -143,7 +144,13 @@ class Collector:
             while not self._stop.is_set():
                 interval = self.config.interval_s
                 self._sync_timer_resolution(interval)
-                started = time.monotonic()
+                # 两个时钟用途不同，**绝不能互相替代**：
+                #   time.time()      写进数据库、告警事件 —— 必须是墙钟，
+                #                    否则导出和保留策略全错（monotonic 每次重启归零，
+                #                    重启后新数据的 ts 会小于旧数据，时间顺序颠倒）
+                #   time.monotonic() 只算"这一轮跑了多久" —— 不受系统校时影响
+                started = time.time()
+                mono = time.monotonic()
                 if not self._paused.is_set():
                     try:
                         self._tick(started)
@@ -153,7 +160,7 @@ class Collector:
                 # 关键：间隔应当是**周期**，不是"跑完再睡多久"。
                 # 若写成 wait(interval)，实际周期 = 单轮耗时 + interval，
                 # 单轮 100ms 时 50ms 间隔只会跑出约 6.7 轮/秒。
-                elapsed = time.monotonic() - started
+                elapsed = time.monotonic() - mono
                 if elapsed > interval * OVERRUN_TOLERANCE:
                     with self._lock:
                         self._overruns += 1

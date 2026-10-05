@@ -1,5 +1,7 @@
 # vrmmon — CPU / GPU 与主板供电温度监控
 
+[![Windows offline checks](https://github.com/LightningZ-X/computer-monitor/actions/workflows/checks.yml/badge.svg)](https://github.com/LightningZ-X/computer-monitor/actions/workflows/checks.yml) · [反馈问题](https://github.com/LightningZ-X/computer-monitor/issues)
+
 Windows 桌面监控工具：传感器表、SQLite/CSV 长时间记录、阈值告警、托盘常驻、开机自启。
 
 **两个数据源都可独立工作**：LibreHardwareMonitor 直读硬件（自带内核驱动，不需要任何
@@ -11,7 +13,7 @@ Windows 桌面监控工具：传感器表、SQLite/CSV 长时间记录、阈值�
 
 ```bat
 pip install -r requirements.txt
-python tools\setup_lhm.ps1            :: 部署 LibreHardwareMonitorLib 及其依赖（一次性）
+powershell -ExecutionPolicy Bypass -File tools\setup_lhm.ps1  :: 部署 LibreHardwareMonitorLib 及其依赖（一次性）
 python tools\install_shortcut.py      :: 装启动器，之后任意终端敲 vrmmon
 ```
 

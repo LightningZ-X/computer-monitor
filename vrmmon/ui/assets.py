@@ -10,9 +10,9 @@ from pathlib import Path
 
 ASSETS = Path(__file__).resolve().parent.parent.parent / "assets"
 
-#: 与功耗计算器同一套 logo：闪电标记 + LIGHTNING 字标（白色遮罩原图）
-MARK_SOURCE = ASSETS / "lightning-mark-source.png"
-WORDMARK_SOURCE = ASSETS / "lightning-wordmark-source.png"
+#: 与功耗计算器使用同一套 VELTRIX 标志和定制字标。
+MARK_SOURCE = ASSETS / "veltrix-mark-source.png"
+WORDMARK_SOURCE = ASSETS / "veltrix-wordmark-source.png"
 
 #: 预先按强调色上好色的版本（tkinter 不能给图片上色）
 HEADER_MARK = ASSETS / "vrmmon-mark.png"
@@ -28,9 +28,9 @@ def find_icon() -> Path | None:
 
 
 #: 顶栏 lockup 里标志的高度（px）。字标宽度由同一比例推出。
-HEADER_MARK_HEIGHT = 34
+HEADER_MARK_HEIGHT = 28
 
 
 def header_gap(mark_height: int = HEADER_MARK_HEIGHT) -> int:
     """标志与字标之间的间距。取那边 .logo 的 gap 11px 同比放大。"""
-    return round(11 * mark_height / (22 * 166 / 88))
+    return round(11 * mark_height / (32 * 278 / 334))

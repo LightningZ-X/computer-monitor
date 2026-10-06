@@ -11,14 +11,13 @@ CONFIG_PATH = ROOT / "config.json"
 
 #: 采样间隔的取值边界。只在这里定义，别处一律调用 clamp_interval()，避免各改各的。
 #:
-#: 下限 5ms：实测单轮成本约 4.74ms（93 个传感器、含落盘），也就是天花板约 211 轮/秒，
-#: 所以 5ms（200 轮/秒）已经贴着能力上限了，再小只会变成忙等。
-#: 注意跑在这个量级会吃掉一整个 CPU 核心。
+#: 常驻监控优先保持低开销，最快每 0.5 秒采样一次，默认每 2 秒一次。
+#: 旧版允许 5ms，会接近占满一个核心；旧配置加载时也必须遵守新下限。
 #:
 #: 还有个**数据新鲜度**的上限不属于本程序：HWiNFO 的共享内存按它自己的
 #: SensorInterval 刷新（本机 100ms），所以间隔低于 100ms 时，HWiNFO 那一路
 #: 会读到重复快照——只有 LHM 那一路是真正的高频。
-MIN_INTERVAL_S = 0.005
+MIN_INTERVAL_S = 0.5
 MAX_INTERVAL_S = 60.0
 
 
@@ -36,12 +35,12 @@ class Thresholds:
 @dataclass
 class Config:
     #: 采样间隔（秒）。下限见 MIN_INTERVAL_S。
-    interval_s: float = 1.0
+    interval_s: float = 2.0
     #: 入库间隔（秒）。0 表示每轮都写。
     #:
     #: 采样与入库必须解耦：50ms 采样 × 768 个读数 ≈ 14,750 行/秒 ≈ 145 GB/天，
     #: 磁盘扛不住。所以界面/告警按 interval_s 走，落盘按这里节流。
-    log_interval_s: float = 1.0
+    log_interval_s: float = 5.0
     #: 记录保留天数。0 表示不清理。超出部分会被定期删除，避免无限增长。
     retention_days: float = 2.0
     #: 保存目标（由 load() 填入）。空表示**不保存**。
@@ -59,7 +58,7 @@ class Config:
     minimize_to_tray: bool = True
     #: 界面动效总开关。系统关闭「显示动画」时，即使这里是 True 也会整段归零
     #: （不是加速播放）——见 ui/motion.py 的 reduced-motion 处理。
-    animations: bool = True
+    animations: bool = False
 
     def resolve(self, rel: str) -> Path:
         path = Path(rel)

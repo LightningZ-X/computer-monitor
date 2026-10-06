@@ -28,7 +28,7 @@ ICON_STEM = "vrmmon"
 SHORTCUT_NAME = "vrmmon 供电温度监控.lnk"
 
 #: 快捷方式描述保持 ASCII：PowerShell 5.1 读无 BOM 的 UTF-8 命令会乱码
-DESCRIPTION = "vrmmon - CPU/GPU power delivery temperature monitor"
+DESCRIPTION = "VELTRIX Monitor - CPU/GPU temperature monitoring"
 
 
 #: 图标与界面标志沿用界面设计令牌（见 vrmmon/ui/theme.py），不另起一套配色。
@@ -37,30 +37,26 @@ DESCRIPTION = "vrmmon - CPU/GPU power delivery temperature monitor"
 ICON_BG = (18, 18, 18)          # --bg       #121212
 ICON_ACCENT = (255, 0, 51)      # --rog      ROG 红，全局唯一强调色
 
-#: 闪电占图标高度的比例。那边 favicon.svg 把 32×60 的标志放在 64×64 里，
-#: 也就是 60/64 = 0.9375。**这条很关键**：之前我用了 148/256 ≈ 0.58，
-#: 缩到任务栏的 16px 时闪电只剩 7 个像素，整个图标看起来就是一个黑方块。
-ICON_MARK_HEIGHT_RATIO = 60 / 64
+#: 按标志宽高比等比放入正方形，宽度占 82%，确保 16px 托盘/任务栏不裁切。
+ICON_MARK_HEIGHT_RATIO = 0.82 * 278 / 334
 
-#: 与功耗计算器同一枚闪电标记 + LIGHTNING 字标。原图都是"纯白 + 透明遮罩"，
+#: 与功耗计算器同一套 VELTRIX 标志和字标。原图都是"纯白 + 透明遮罩"，
 #: 需要按强调色上色（对应那边 CSS 的 background: var(--rog) + mask-image）。
 ASSETS = ROOT / "assets"
-MARK_SOURCE = ASSETS / "lightning-mark-source.png"
-WORDMARK_SOURCE = ASSETS / "lightning-wordmark-source.png"
-#: 素材原图的兜底来源：**只有** assets/ 里缺 lightning-*-source.png 时才会用到。
+MARK_SOURCE = ASSETS / "veltrix-mark-source.png"
+WORDMARK_SOURCE = ASSETS / "veltrix-wordmark-source.png"
+#: 素材原图的兜底来源：**只有** assets/ 里缺 veltrix-*-source.png 时才会用到。
 #: 正常情况下那两个源文件已在仓库里，换机器也能跑；默认指向本机那份功耗计算器
 #: 工程，可用环境变量 VRMMON_PSU_ASSETS 覆盖。
 PSU_ASSETS = Path(os.environ.get(
     "VRMMON_PSU_ASSETS", r"D:\deepseekharness\psu-calculator\assets"))
-PSU_MARK = PSU_ASSETS / "lightning-mark.png"
-PSU_WORDMARK = PSU_ASSETS / "lightning-wordmark.png"
+PSU_MARK = PSU_ASSETS / "veltrix-mark-source.png"
+PSU_WORDMARK = PSU_ASSETS / "veltrix-wordmark-source.png"
 HEADER_MARK = ASSETS / "vrmmon-mark.png"
 HEADER_WORDMARK = ASSETS / "vrmmon-wordmark.png"
 
-#: 顶栏 lockup 的几何直接取那边 .logo 的比例：
-#: mark 宽 22px（aspect 88/166 → 高 41.5）、wordmark 宽 140px、gap 11px。
-#: 于是「字标宽 / 标志高」= 140 / 41.5 ≈ 3.373。
-WORDMARK_WIDTH_PER_MARK_HEIGHT = 140 / (22 * 166 / 88)
+#: 顶栏比例与功耗计算器一致：标志宽 32px，334/278；字标宽 140px。
+WORDMARK_WIDTH_PER_MARK_HEIGHT = 140 / (32 * 278 / 334)
 
 
 def _ensure_source(path: Path, fallback: Path) -> Path:
@@ -97,7 +93,7 @@ def make_icon() -> Path:
     """应用图标：满幅 --bg 底 + 大红闪电。
 
     几何与配色对齐功耗计算器的 apple-touch-icon.png：底色 #121212、满幅不透明、
-    无描边无圆角，闪电占高 94%。这样缩到 16px 仍能认出是闪电，而不是一块黑。
+    无描边无圆角，标志等比缩放，宽度占 82%，缩到 16px 仍保持完整轮廓。
 
     文件名带内容哈希——原因见 _icon_path()。
     """
@@ -147,12 +143,12 @@ def _drop_stale_icons(keep: Path) -> None:
 
 def prepare_header_mark() -> Path:
     """界面顶栏用的标记（tkinter 不能给图片上色，所以这里预先成一版红色 PNG）。"""
-    _tinted_mark(34).save(HEADER_MARK)
+    _tinted_mark(28).save(HEADER_MARK)
     return HEADER_MARK
 
 
-def prepare_header_wordmark(mark_height: int = 34) -> Path:
-    """顶栏字标（LIGHTNING）。宽度按那边 .logo 的比例与标志高度联动。"""
+def prepare_header_wordmark(mark_height: int = 28) -> Path:
+    """顶栏字标（VELTRIX）。宽度按那边 .logo 的比例与标志高度联动。"""
     width = round(mark_height * WORDMARK_WIDTH_PER_MARK_HEIGHT)
     _tinted(_ensure_source(WORDMARK_SOURCE, PSU_WORDMARK), width=width).save(
         HEADER_WORDMARK)

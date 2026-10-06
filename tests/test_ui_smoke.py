@@ -46,6 +46,7 @@ def main() -> int:
         config.db_path = str(Path(tmp) / "ui.sqlite3")
         config.interval_s = 0.5
         config.sound = False
+        config.animations = True  # Exercise opt-in motion; lightweight defaults are static.
         config.minimize_to_tray = False
         # 兜底：万一走到退出路径，也绝不写真实的 config.json
         config.save_path = str(Path(tmp) / "config.json")

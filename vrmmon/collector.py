@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import ctypes
-import gc
 import sys
 import threading
 import time
@@ -70,6 +69,7 @@ class Snapshot:
 
 class Collector:
     def __init__(self, config: Config) -> None:
+        config.interval_s = clamp_interval(config.interval_s)
         self.config = config
         self.providers: list[Provider] = build_providers()
         self.registry = Registry()
@@ -93,6 +93,7 @@ class Collector:
         self._rows = self.store.rows()
         self._db_bytes = self.store.size_bytes()
         self._last_probe = 0.0
+        self._last_size_check = 0.0
 
         self.started_at = time.time()
         self._stop = threading.Event()
@@ -134,12 +135,8 @@ class Collector:
 
     def _run(self) -> None:
         self._probe(force=True)
-        # 采集循环不再新建配置/注册表类对象，把已存在的对象移出 GC 的扫描范围，
-        # 减少高频采样下的 GC 停顿（实测能占掉 17% 的墙钟时间）。
-        try:
-            gc.freeze()
-        except Exception:
-            pass
+        # Normal monitoring does not alter the process-wide garbage collector
+        # or request high-resolution timers; GUI objects remain collectable.
         try:
             while not self._stop.is_set():
                 interval = self.config.interval_s
@@ -226,11 +223,13 @@ class Collector:
                 with self._lock:
                     self._rows = max(0, self._rows - removed)
 
+        if now - self._last_size_check >= 10.0:
+            self._db_bytes = self.store.size_bytes()
+            self._last_size_check = now
         with self._lock:
             self._sequence += 1
             self._written += added
             self._rows += added
-            self._db_bytes = self.store.size_bytes()
             self._alerts.extend(events)
 
         if events:

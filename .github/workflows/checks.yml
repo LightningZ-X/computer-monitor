@@ -20,5 +20,9 @@ jobs:
           python-version: '3.13'
       - name: Check syntax
         run: python -m compileall -q main.py vrmmon tools tests
+      - name: Install existing icon and tray dependencies for UI tests
+        run: python -m pip install pillow pystray
       - name: Test shared-memory parsing and sensor classification
         run: python tests/test_hwinfo_parse.py
+      - name: Test offline UI and lightweight refresh behavior
+        run: python tests/test_lightweight_ui.py

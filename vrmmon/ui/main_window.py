@@ -1,4 +1,4 @@
-"""主窗口：供电健康面板 + 传感器树 + 实时曲线 + 托盘。
+"""轻量主窗口：温度摘要、可搜索的传感器表与托盘。
 
 线程约定：控件只在主线程操作。托盘菜单回调通过 post() 投递到命令队列，
 由 _drain_commands() 在主线程执行。
@@ -13,6 +13,7 @@ import re
 import sys
 import time
 import tkinter as tk
+from collections import deque
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -25,7 +26,8 @@ from . import assets as ui_assets
 from .theme import (ACCENT, BG, BG2, CRIT, FG, FONT_MONO_SM, LINE,
                     MUTED, NAV, SURFACE, TEXT2, TEXT4, WARN)
 
-REFRESH_MS = 800
+REFRESH_MS = 1000
+HIDDEN_REFRESH_MS = 2000
 #: 项目根目录（标志等资源从这里找）
 ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -42,7 +44,7 @@ class MainWindow:
         self._commands: queue.Queue = queue.Queue()
         self._tree_keys: frozenset | None = None
         self._show_all = tk.BooleanVar(value=False)
-        self._alert_log: list[AlertEvent] = []
+        self._alert_log: deque[AlertEvent] = deque(maxlen=500)
         self._last_alert: AlertEvent | None = None
         self._latest_snapshot = None
         self._status_override = ""
@@ -52,6 +54,13 @@ class MainWindow:
         self.show_requested = False
         #: 已开始退出：此后不得再排 after、不得再碰控件
         self._closing = False
+        self._search = tk.StringVar(value="")
+        self._tree_values: dict[str, tuple] = {}
+        self._text_cache: dict = {}
+        self._display_key = None
+        self._view_revision = 0
+        self._refresh_after = None
+        self.root.bind("<Destroy>", self._on_destroy, add="+")
 
         self._apply_theme()
         self._build_window()
@@ -66,7 +75,7 @@ class MainWindow:
         if start_minimized:
             root.withdraw()
         self._start_tray()
-        self.root.after(REFRESH_MS, self._refresh)
+        self._refresh_after = self.root.after(REFRESH_MS, self._refresh)
 
     # ---------- 构建 ----------
 
@@ -75,7 +84,7 @@ class MainWindow:
         theme.apply(self.root)
 
     def _build_window(self) -> None:
-        self.root.title("vrmmon - 供电温度监控")
+        self.root.title("VELTRIX Monitor · 温度监控")
         self.root.geometry("1180x760")
         self.root.minsize(900, 600)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -142,9 +151,7 @@ class MainWindow:
         bar = ttk.Frame(self.root, style="Nav.TFrame", padding=(10, 7))
         bar.pack(fill="x")
 
-        # 标志 lockup：与功耗计算器同一枚闪电标记 + LIGHTNING 字标，用强调色上色。
-        # 那边 .logo 是 [mark 22px] gap 11px [wordmark 140px]，这里同比例放大到
-        # 标志高 34px（字标宽度由 install_menu_shortcut.py 按同一比例预生成）。
+        # Static assets are loaded once. No logo animation or runtime rasterization.
         self._logo_images: list[tk.PhotoImage] = []
         for path, gap in ((ui_assets.HEADER_MARK, ui_assets.header_gap()),
                           (ui_assets.HEADER_WORDMARK, 18)):
@@ -157,6 +164,19 @@ class MainWindow:
             self._logo_images.append(image)
             tk.Label(bar, image=image, bg=NAV).pack(side="left", padx=(0, gap))
 
+        ttk.Label(bar, text="温度监控", style="NavMuted.TLabel").pack(side="left")
+        self._run_label = ttk.Label(bar, text="正在连接传感器", style="NavMuted.TLabel")
+        self._run_label.pack(side="right", padx=(12, 0))
+        self.btn_admin = ttk.Button(bar, text="以管理员重启", width=14,
+                                    command=self.restart_as_admin)
+        self.btn_admin.pack(side="right")
+        if self.is_elevated():
+            self.btn_admin.configure(text="已提权", state="disabled")
+
+        controls = ttk.Frame(self.root, padding=(12, 8))
+        controls.pack(fill="x")
+        bar = controls
+
         self.btn_pause = ttk.Button(bar, text="暂停", width=8, command=self.toggle_pause)
         self.btn_pause.pack(side="left")
         ttk.Button(bar, text="导出 CSV", width=10,
@@ -164,40 +184,50 @@ class MainWindow:
         ttk.Button(bar, text="重置极值", width=10,
                    command=self.reset_extremes).pack(side="left")
 
-        ttk.Label(bar, text="采样间隔", style="NavMuted.TLabel").pack(
+        ttk.Label(bar, text="采样间隔", style="Muted.TLabel").pack(
             side="left", padx=(16, 4))
         self.var_interval = tk.StringVar(value=f"{self.config.interval_s:g}")
-        spin = ttk.Spinbox(bar, from_=MIN_INTERVAL_S, to=10.0, increment=0.005, width=6,
+        spin = ttk.Spinbox(bar, from_=MIN_INTERVAL_S, to=60.0, increment=0.5, width=6,
                            textvariable=self.var_interval, command=self._on_interval)
         spin.pack(side="left")
         spin.bind("<Return>", lambda _e: self._on_interval())
-        ttk.Label(bar, text="秒", style="NavMuted.TLabel").pack(side="left", padx=(4, 0))
-
-        ttk.Checkbutton(bar, text="显示全部读数", variable=self._show_all,
-                        style="Nav.TCheckbutton",
-                        command=self._on_filter).pack(side="left", padx=(16, 0))
+        ttk.Label(bar, text="秒 · 建议 2 秒", style="Muted.TLabel").pack(side="left", padx=(4, 0))
         self.var_autostart = tk.BooleanVar(value=self.is_autostart())
         ttk.Checkbutton(bar, text="开机自启", variable=self.var_autostart,
-                        style="Nav.TCheckbutton",
+                        style="TCheckbutton",
                         command=lambda: self.set_autostart(self.var_autostart.get())
-                        ).pack(side="left", padx=(12, 0))
+                        ).pack(side="right", padx=(12, 0))
         self.var_sound = tk.BooleanVar(value=self.config.sound)
         ttk.Checkbutton(bar, text="告警声音", variable=self.var_sound,
-                        style="Nav.TCheckbutton",
-                        command=self._on_sound).pack(side="left", padx=(12, 0))
-
-        self.btn_admin = ttk.Button(bar, text="以管理员重启", width=14,
-                                    command=self.restart_as_admin)
-        self.btn_admin.pack(side="right")
-        if self.is_elevated():
-            self.btn_admin.configure(text="已提权", state="disabled")
+                        style="TCheckbutton",
+                        command=self._on_sound).pack(side="right", padx=(12, 0))
 
         theme.rule(self.root, LINE).pack(fill="x")
 
     def _build_body(self) -> None:
-        """只剩传感器表——曲线与健康面板已按要求移除。"""
+        """Flat temperature summary and a searchable table; no charts or canvases."""
         shell = tk.Frame(self.root, bg=BG)
         shell.pack(fill="both", expand=True, padx=10, pady=(8, 6))
+
+        overview = tk.Frame(shell, bg=BG)
+        overview.pack(fill="x", pady=(8, 18))
+        self._summary_labels = {}
+        for index, (key, title, note) in enumerate((
+            ("cpu", "CPU 最高温度", "封装 / 核心"),
+            ("gpu", "GPU 最高温度", "核心 / 热点 / 显存"),
+            ("vrm", "供电温度", "未提供时不以其他温度代替"),
+        )):
+            column = tk.Frame(overview, bg=BG)
+            column.grid(row=0, column=index, sticky="ew", padx=(8, 16))
+            overview.columnconfigure(index, weight=1, uniform="summary")
+            tk.Label(column, text=title, bg=BG, fg=MUTED, font=theme.FONT_SM,
+                     anchor="w").pack(fill="x")
+            value = tk.Label(column, text="—", bg=BG, fg=FG,
+                             font=(theme.MONO, 22, "bold"), anchor="w")
+            value.pack(fill="x", pady=(4, 3))
+            tk.Label(column, text=note, bg=BG, fg=TEXT4, font=theme.FONT_XS,
+                     anchor="w").pack(fill="x")
+            self._summary_labels[key] = value
 
         header_row = tk.Frame(shell, bg=BG)
         header_row.pack(fill="x")
@@ -207,8 +237,18 @@ class MainWindow:
                                     font=FONT_MONO_SM)
         self.count_label.pack(side="right")
 
+        filters = tk.Frame(shell, bg=BG)
+        filters.pack(fill="x", pady=(8, 8))
+        ttk.Label(filters, text="搜索传感器", style="Muted.TLabel").pack(side="left", padx=(0, 8))
+        self.search_entry = ttk.Entry(filters, textvariable=self._search, width=30)
+        self.search_entry.pack(side="left")
+        ttk.Checkbutton(filters, text="显示全部读数", variable=self._show_all,
+                        command=self._on_filter).pack(side="left", padx=12)
+        self._search.trace_add("write", lambda *_: self._on_filter())
+        self.root.bind("<Control-f>", lambda _: self.search_entry.focus_set())
+
         # 4px 红条：设计系统里"关键值"的指示条
-        theme.accent_bar(shell, height=4).pack(fill="x", pady=(6, 8))
+        theme.rule(shell, LINE).pack(fill="x", pady=(0, 8))
 
         tree_shell = tk.Frame(shell, bg=BG2)
         tree_shell.pack(fill="both", expand=True)
@@ -241,8 +281,10 @@ class MainWindow:
         self._status_bar = bar
         # 状态栏全是数字，用等宽字体保证对齐
         self.status_label = tk.Label(bar, text="正在启动…", bg=NAV, fg=MUTED,
-                                     anchor="w", font=FONT_MONO_SM)
+                                     anchor="w", justify="left", font=FONT_MONO_SM)
         self.status_label.pack(fill="x", padx=12, pady=5)
+        self._empty_label = ttk.Label(
+            self.tree, text="正在等待传感器数据…", style="Muted.TLabel")
         # 先 pack 状态栏再 pack 分隔线，线才会落在状态栏上方
         theme.rule(self.root, LINE).pack(fill="x", side="bottom")
 
@@ -297,6 +339,17 @@ class MainWindow:
 
     # ---------- 刷新 ----------
 
+    def _cancel_refresh(self) -> None:
+        if self._refresh_after is not None:
+            with contextlib.suppress(tk.TclError):
+                self.root.after_cancel(self._refresh_after)
+            self._refresh_after = None
+
+    def _on_destroy(self, event) -> None:
+        if event.widget is self.root:
+            self._closing = True
+            self._cancel_refresh()
+
     def _refresh(self) -> None:
         """刷新入口。异常必须被吞掉并落盘，否则 after 链会断、界面就此冻死。
 
@@ -306,6 +359,7 @@ class MainWindow:
         """
         if self._closing:
             return
+        self._cancel_refresh()
         if self.shutdown_requested:
             self.quit_app("收到 vrmmon stop 信号")
             return
@@ -325,7 +379,8 @@ class MainWindow:
         if self._closing:
             return
         try:
-            self.root.after(REFRESH_MS, self._refresh)
+            delay = REFRESH_MS if self._window_visible() else HIDDEN_REFRESH_MS
+            self._refresh_after = self.root.after(delay, self._refresh)
         except tk.TclError:
             self._closing = True
 
@@ -335,21 +390,54 @@ class MainWindow:
         snapshot = self.collector.snapshot()
 
         self._latest_snapshot = snapshot
-        sensors = snapshot.sensors
-        visible = self._visible_sensors(sensors)
-        self._sync_tree(visible)
-        self._update_tree(visible)
-        self._update_count(visible, sensors)
         self._handle_alerts(snapshot.alerts)
         self._update_tray(snapshot)
+        if not self._window_visible():
+            self._display_key = None  # Force a fresh presentation when restored.
+            return
+        key = (snapshot.sequence, snapshot.paused, self._view_revision)
+        if key != self._display_key:
+            sensors = snapshot.sensors
+            visible = self._visible_sensors(sensors)
+            self._sync_tree(visible)
+            self._update_tree(visible)
+            self._update_count(visible, sensors)
+            self._update_summary(sensors)
+            self._display_key = key
         self._update_status(snapshot)
+
+    def _window_visible(self) -> bool:
+        return self.root.state() == "normal" and bool(self.root.winfo_viewable())
+
+    def _set_text(self, widget, text: str, foreground=None) -> None:
+        key = (text, foreground)
+        if self._text_cache.get(widget) == key:
+            return
+        options = {"text": text}
+        if foreground is not None:
+            options["foreground"] = foreground
+        widget.configure(**options)
+        self._text_cache[widget] = key
+
+    def _update_summary(self, sensors: list[Sensor]) -> None:
+        roles = {
+            "cpu": (Role.CPU_PACKAGE, Role.CPU_CORE, Role.CPU_SOC),
+            "gpu": (Role.GPU_CORE, Role.GPU_HOTSPOT, Role.GPU_MEMORY),
+            "vrm": (Role.CPU_VRM, Role.GPU_VRM, Role.VRM_UNKNOWN),
+        }
+        for key, wanted in roles.items():
+            value = self._best(sensors, wanted)
+            colour = TEXT4 if value is None else (CRIT if value >= self.config.thresholds.critical
+                      else WARN if value >= self.config.thresholds.warn else FG)
+            self._set_text(self._summary_labels[key],
+                           "未提供" if value is None else format_value(value, "°C"), colour)
+
     def _visible_sensors(self, sensors: list[Sensor]) -> list[Sensor]:
-        if self._show_all.get():
-            return sensors
-        # 默认隐藏"名似温度但不是温度"的读数（差值/阈值/分辨率），避免污染视图
-        return [s for s in sensors
-                if (s.kind is Kind.TEMPERATURE and s.role is not Role.META)
-                or s.is_alarm or s.is_vrm]
+        query = self._search.get().strip().casefold()
+        return [s for s in sensors if
+                (self._show_all.get() or (s.kind is Kind.TEMPERATURE and s.role is not Role.META)
+                 or s.is_alarm or s.is_vrm) and
+                (not query or query in f"{s.id.group} {s.id.name} {ROLE_LABELS.get(s.role, '')}".casefold())]
 
     def _sync_tree(self, sensors: list[Sensor]) -> None:
         keys = frozenset((s.id.provider, s.id.group, s.id.name, s.id.kind)
@@ -357,19 +445,33 @@ class MainWindow:
         if keys == self._tree_keys:
             return
         self._tree_keys = keys
+        selected = self.tree.selection()
+        position = self.tree.yview()[0]
+        opened = {iid: self.tree.item(iid, "open") for iid in self.tree.get_children()}
         self.tree.delete(*self.tree.get_children())
+        self._tree_values.clear()
         groups: dict[str, str] = {}
         for sensor in sorted(sensors, key=lambda s: (s.id.provider, s.id.group, s.id.name)):
             gkey = f"G|{sensor.id.provider}|{sensor.id.group}"
             parent = groups.get(gkey)
             if parent is None:
                 parent = self.tree.insert(
-                    "", "end", iid=gkey, open=True,
+                    "", "end", iid=gkey, open=opened.get(gkey, True),
                     text=f"{sensor.id.group}  [{sensor.id.provider}]",
                     values=("", "", "", ""), tags=("group",))
                 groups[gkey] = parent
             self.tree.insert(parent, "end", iid=str(sensor.id), text=sensor.id.name,
                              values=("", "", "", ""), tags=self._tags(sensor))
+        surviving = [iid for iid in selected if self.tree.exists(iid)]
+        if surviving:
+            self.tree.selection_set(surviving)
+        self.tree.yview_moveto(position)
+        if sensors:
+            self._empty_label.place_forget()
+        else:
+            self._empty_label.configure(text="没有匹配的读数" if self._search.get().strip()
+                                        else "未发现传感器 · 可查看体检报告或以管理员重启")
+            self._empty_label.place(relx=.5, rely=.4, anchor="center")
 
     @staticmethod
     def _tags(sensor: Sensor) -> tuple[str, ...]:
@@ -384,20 +486,22 @@ class MainWindow:
     def _update_count(self, visible: list[Sensor], all_sensors: list[Sensor]) -> None:
         """右上角计数：当前视图里有几项、其中几个是温度。"""
         temps = sum(1 for s in visible if s.kind is Kind.TEMPERATURE)
-        self.count_label.config(
-            text=f"{len(visible)} 项 / {temps} 个温度（全部读数 {len(all_sensors)}）")
+        self._set_text(self.count_label,
+                       f"{len(visible)} 项 / {temps} 个温度（全部读数 {len(all_sensors)}）")
 
     def _update_tree(self, sensors: list[Sensor]) -> None:
         for sensor in sensors:
             iid = str(sensor.id)
-            if not self.tree.exists(iid):
-                continue
             low, high = sensor.bounds()
-            self.tree.set(iid, "cur", format_value(sensor.last_value, sensor.unit))
-            self.tree.set(iid, "min", format_value(low, sensor.unit))
-            self.tree.set(iid, "max", format_value(high, sensor.unit))
-            self.tree.set(iid, "role", ROLE_LABELS.get(sensor.role, sensor.role.value))
-            self.tree.item(iid, tags=self._tags(sensor))
+            values = (format_value(sensor.last_value, sensor.unit),
+                      format_value(low, sensor.unit), format_value(high, sensor.unit),
+                      ROLE_LABELS.get(sensor.role, sensor.role.value))
+            tags = self._tags(sensor)
+            rendered = (values, tags)
+            if self._tree_values.get(iid) == rendered:
+                continue
+            self.tree.item(iid, values=values, tags=tags)
+            self._tree_values[iid] = rendered
 
     # ---------- 告警 ----------
 
@@ -417,7 +521,7 @@ class MainWindow:
         用背景色往返插值，不动文字，结束后精确回到常态色。
         """
         bar = getattr(self, "_status_bar", None)
-        if bar is None or not motion.animations_enabled(self.config):
+        if bar is None or not motion.animations_enabled(self.config) or not self._window_visible():
             return
         peak = CRIT if severe else WARN
         cycles, duration = 3, 900
@@ -476,7 +580,7 @@ class MainWindow:
             vrm_text = "供电温度：本机未暴露"
         paused = "（已暂停）" if snapshot.paused else ""
         # 图标现在只表达状态色，"是几度"放在悬停提示里
-        tooltip = (f"vrmmon{paused}\n"
+        tooltip = (f"VELTRIX Monitor{paused}\n"
                    f"最高 {format_value(overall, '°C')}\n"
                    f"CPU {format_value(cpu, '°C')}   GPU {format_value(gpu, '°C')}\n"
                    f"{vrm_text}")
@@ -485,7 +589,8 @@ class MainWindow:
     @staticmethod
     def _best(sensors: list[Sensor], roles: tuple[Role, ...]) -> float | None:
         values = [s.last_value for s in sensors
-                  if s.role in roles and s.last_value is not None]
+                  if s.role in roles and s.kind is Kind.TEMPERATURE
+                  and s.last_value is not None and s.last_value == s.last_value]
         return max(values) if values else None
 
     # ---------- 状态栏 ----------
@@ -493,7 +598,7 @@ class MainWindow:
 
     def _update_status(self, snapshot) -> None:
         if self._status_override and time.time() < self._status_override_until:
-            self.status_label.config(text=self._status_override, fg=WARN)
+            self._set_text(self.status_label, self._status_override, WARN)
             return
         self._status_override = ""
 
@@ -514,17 +619,18 @@ class MainWindow:
         actual_rate = snapshot.sequence / uptime
         target = self.config.interval_s
         behind = target > 0 and actual_rate < 0.9 / target
-        sampling = (f"采样 {actual_rate:.0f}/秒"
-                    + (f"（设定 {1 / target:.0f}）" if target > 0 else "（不间歇）"))
+        sampling = (f"采样 {actual_rate:.2g}/秒"
+                    + (f"（设定 {1 / target:.2g}）" if target > 0 else "（不间歇）"))
 
-        text = (f"{statuses}    |    已采集 {snapshot.written} 点 / 入库 {snapshot.rows} 行"
-                f" ({size_mb:.1f} MB)    |    {sampling}"
+        text = (f"{statuses}\n"
+                f"记录 {snapshot.rows:,} 行 ({size_mb:.1f} MB)    |    {sampling}"
                 f"    |    {rate:.0f} 行/秒 ≈ {gb_per_day:.2f} GB/天"
                 f"    |    运行 {hours:d}:{remainder // 60:02d}"
                 + ("    |    已暂停" if snapshot.paused else ""))
-        self.status_label.config(
-            text=text,
-            fg=WARN if (gb_per_day >= 1.0 or behind) else MUTED)
+        self._set_text(self.status_label, text,
+                       WARN if (gb_per_day >= 1.0 or behind) else MUTED)
+        self._set_text(self._run_label,
+                       "已暂停" if snapshot.paused else f"后台记录 · {target:g} 秒采样")
     def _on_interval(self) -> None:
         try:
             seconds = float(self.var_interval.get())
@@ -537,6 +643,9 @@ class MainWindow:
 
     def _on_filter(self) -> None:
         self._tree_keys = None  # 强制重建
+        self._view_revision += 1
+        if self._latest_snapshot is not None and not self._closing:
+            self._refresh_once()
 
     def _on_sound(self) -> None:
         self.config.sound = self.var_sound.get()
@@ -551,12 +660,15 @@ class MainWindow:
 
     def reset_extremes(self) -> None:
         self.collector.reset_extremes()
+        self._view_revision += 1
         self._status_override = "极值已重置"
 
     def show_window(self) -> None:
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
+        self._display_key = None
+        self._refresh_once()
 
     def is_autostart(self) -> bool:
         from .. import autostart
@@ -690,6 +802,7 @@ class MainWindow:
         if self._closing:
             return
         self._closing = True
+        self._cancel_refresh()
 
         from .. import logging_setup
         logging_setup.log_message(f"正常退出（原因：{reason}）", "退出")

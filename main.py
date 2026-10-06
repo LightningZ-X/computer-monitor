@@ -43,7 +43,7 @@ def set_app_user_model_id() -> None:
     """
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "LightningZ.vrmmon.TemperatureMonitor")
+            "VELTRIX.vrmmon.TemperatureMonitor")
     except Exception:
         pass
 

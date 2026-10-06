@@ -32,11 +32,12 @@ ICON_SIZE = 64
 def _mark_mask(height: int) -> Image.Image:
     """取标记的 alpha 通道并缩放到指定高度。结果缓存，避免每次换色都读盘。"""
     source = Image.open(MARK_SOURCE).convert("RGBA")
-    scale = height / source.height
+    scale = min(height / source.height, height / source.width)
     width = max(1, round(source.width * scale))
     return source.getchannel("A").resize((width, height), Image.LANCZOS)
 
 
+@lru_cache(maxsize=4)
 def make_icon(level: str) -> Image.Image:
     """托盘图标 = 同一枚闪电标记 + 状态色。与顶栏标志、应用图标视觉一致。"""
     colour = LEVEL_COLORS.get(level, LEVEL_COLORS["stale"])
@@ -84,7 +85,7 @@ class Tray:
 
     def start(self) -> None:
         self._icon = pystray.Icon("vrmmon", make_icon("stale"),
-                                  "vrmmon - 供电温度监控", self._menu())
+                                  "VELTRIX Monitor · 温度监控", self._menu())
         self._thread = threading.Thread(target=self._icon.run, name="vrmmon-tray",
                                         daemon=True)
         self._thread.start()
@@ -109,10 +110,12 @@ class Tray:
         key = (tooltip, level)
         if key == self._last_key:
             return
-        self._last_key = key
         try:
-            self._icon.icon = make_icon(level)
-            self._icon.title = tooltip
+            if self._last_key is None or level != self._last_key[1]:
+                self._icon.icon = make_icon(level)
+            if self._last_key is None or tooltip != self._last_key[0]:
+                self._icon.title = tooltip
+            self._last_key = key
         except Exception:  # 托盘不可用时不应影响采集
             pass
 
